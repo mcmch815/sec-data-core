@@ -1,0 +1,23 @@
+# Raw SEC quarterly data files (~27GB)
+Data/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+
+# IDE / tooling
+.claude/
+.playwright-mcp/
+
+# Logs
+viewer/viewer.log
