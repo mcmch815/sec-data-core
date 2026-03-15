@@ -107,12 +107,15 @@ def _build_facts(
     """Stream deduped facts from src → mart. Returns row count inserted.
 
     Algorithm:
-      1. Dedup: pick the most recently filed adsh per (cik, tag, ddate, qtrs).
-      2. Join to pre on (adsh, tag), picking the first pre row per (adsh, tag, stmt)
+      1. Canonical adsh: pick the most recently filed adsh per (cik, ddate) — one
+         filing is authoritative for each fiscal period date. This prevents tag mixing
+         when a company renames XBRL tags between filings.
+      2. Collect all num facts from that canonical adsh for that ddate.
+      3. Join to pre on (adsh, tag), picking the first pre row per (adsh, tag, stmt)
          ordered by (report, line). This gives the correct display ordering and
          presentation label (plabel) from the winning filing.
-      3. A tag appearing in both IS and CF in pre produces two rows — one per stmt.
-      4. Tags with no IS/BS/CF pre entry for their winning adsh are excluded.
+      4. A tag appearing in both IS and CF in pre produces two rows — one per stmt.
+      5. Tags with no IS/BS/CF pre entry for their winning adsh are excluded.
     """
     # Temp table of known fiscal year-end dates per CIK — every date that appears
     # as sub.period in our source data. Facts are only included if their ddate is
@@ -128,19 +131,21 @@ def _build_facts(
     src_conn.commit()
 
     cursor = src_conn.execute("""
-        SELECT d.cik, d.tag, d.ddate, d.qtrs, d.uom, d.value,
+        SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom, COALESCE(CAST(n.value AS REAL), 0.0) AS value,
                p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth
         FROM (
-            -- Step 1: dedup — best adsh per (cik, tag, ddate, qtrs).
-            -- Only include facts where ddate is a known fiscal year-end date for
-            -- that CIK (i.e. ddate appears as sub.period somewhere in our data).
-            -- This excludes prior-year carryforward data, interim BS snapshots,
-            -- and supplementary regulatory disclosures at off-cycle dates.
-            SELECT cik, tag, ddate, qtrs, uom, value, adsh FROM (
-                SELECT s.cik, n.tag, n.ddate, n.qtrs, n.uom,
-                       CAST(n.value AS REAL) AS value, n.adsh,
+            -- Step 1: canonical adsh per (cik, ddate) — most recently filed adsh
+            -- that has any annual fact for that date. One filing is authoritative
+            -- for each fiscal period, preventing tag mixing when a company renames
+            -- XBRL tags between filings. Only fiscal year-end dates are included
+            -- (ddate must appear as sub.period for that CIK), which excludes
+            -- prior-year carryforward data, interim BS snapshots, and off-cycle
+            -- supplementary disclosures.
+            SELECT cik, ddate, adsh
+            FROM (
+                SELECT s.cik, n.ddate, n.adsh,
                        ROW_NUMBER() OVER (
-                           PARTITION BY s.cik, n.tag, n.ddate, n.qtrs
+                           PARTITION BY s.cik, n.ddate
                            ORDER BY s.filed DESC, s.adsh DESC
                        ) AS rn
                 FROM num n
@@ -152,19 +157,21 @@ def _build_facts(
                       WHERE ap.cik = s.cik AND ap.period = n.ddate
                   )
             ) WHERE rn = 1
-        ) d
+        ) ca
+        -- Step 2: all num facts from that canonical adsh for that ddate
+        JOIN num n  ON n.adsh = ca.adsh AND n.ddate = ca.ddate
+                      AND n.segments IS NULL AND n.coreg IS NULL AND n.qtrs IN (0, 4)
+        -- Step 3: pre join — restricts to IS/BS/CF and provides display ordering
         JOIN (
-            -- Step 2: first pre row per (adsh, tag, stmt) by (report, line)
             SELECT adsh, tag, stmt, report, line, plabel, negating, inpth FROM (
                 SELECT adsh, tag, stmt, report, line, plabel, negating, inpth,
                        ROW_NUMBER() OVER (
                            PARTITION BY adsh, tag, stmt
                            ORDER BY report, line
                        ) AS rn
-                FROM pre
-                WHERE stmt IN ('IS', 'BS', 'CF')
+                FROM pre WHERE stmt IN ('IS', 'BS', 'CF')
             ) WHERE rn = 1
-        ) p ON p.adsh = d.adsh AND p.tag = d.tag
+        ) p ON p.adsh = ca.adsh AND p.tag = n.tag
     """)
 
     total = 0
