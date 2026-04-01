@@ -95,7 +95,8 @@ conda run -n tf python -m db_reduction.verify_mart           # cross-check 7 che
 One canonical value per `(company, tag, fiscal-date)`, IS/BS/CF only.
 
 ```sql
--- companies: most recent name per CIK
+-- sic_codes: 444 SEC-published SIC codes with description, office, division (A–J), division_name
+-- companies: most recent name and SIC code per CIK (sic FK → sic_codes)
 -- periods:   (cik, ddate) pairs with fy label
 -- facts:     (cik, tag, label, stmt, ddate, qtrs, uom, value)
 ```

@@ -26,9 +26,18 @@ BATCH_SIZE = 50_000
 # ---------------------------------------------------------------------------
 
 _DDL = """
+CREATE TABLE sic_codes (
+    sic           TEXT PRIMARY KEY,
+    description   TEXT,
+    office        TEXT,
+    division      TEXT,
+    division_name TEXT
+);
+
 CREATE TABLE companies (
     cik   TEXT PRIMARY KEY,
-    name  TEXT
+    name  TEXT,
+    sic   TEXT REFERENCES sic_codes(sic)
 );
 
 CREATE TABLE periods (
@@ -99,6 +108,18 @@ def _build_canonical_label(src_conn: sqlite3.Connection) -> dict[str, str]:
 # Build facts
 # ---------------------------------------------------------------------------
 
+_PRE_SUBQUERY = """
+    SELECT adsh, tag, stmt, report, line, plabel, negating, inpth FROM (
+        SELECT adsh, tag, stmt, report, line, plabel, negating, inpth,
+               ROW_NUMBER() OVER (
+                   PARTITION BY adsh, tag, stmt
+                   ORDER BY report, line
+               ) AS rn
+        FROM pre WHERE stmt IN ('IS', 'BS', 'CF')
+    ) WHERE rn = 1
+"""
+
+
 def _build_facts(
     src_conn: sqlite3.Connection,
     mart_conn: sqlite3.Connection,
@@ -109,18 +130,19 @@ def _build_facts(
     Algorithm:
       1. Canonical adsh: pick the most recently filed adsh per (cik, ddate) — one
          filing is authoritative for each fiscal period date. This prevents tag mixing
-         when a company renames XBRL tags between filings.
-      2. Collect all num facts from that canonical adsh for that ddate.
-      3. Join to pre on (adsh, tag), picking the first pre row per (adsh, tag, stmt)
-         ordered by (report, line). This gives the correct display ordering and
-         presentation label (plabel) from the winning filing.
+         when a company renames XBRL tags between filings. Only fiscal year-end dates
+         are included (ddate must appear as sub.period for that CIK), which excludes
+         prior-year carryforward data, interim BS snapshots, and off-cycle disclosures.
+      2. Primary pass: all null-segment num facts from that canonical adsh, joined to
+         pre for IS/BS/CF statement membership and display ordering.
+      3. Segmented fallback: for tags with no null-segment row, sum all eq_count=1
+         (single-dimension) segmented rows per (cik, tag, ddate, qtrs, stmt). This
+         captures values that companies only filed in segmented form (e.g. a related-
+         party subtotal). INSERT OR IGNORE ensures primary-pass rows are never replaced.
       4. A tag appearing in both IS and CF in pre produces two rows — one per stmt.
       5. Tags with no IS/BS/CF pre entry for their winning adsh are excluded.
     """
-    # Temp table of known fiscal year-end dates per CIK — every date that appears
-    # as sub.period in our source data. Facts are only included if their ddate is
-    # in this set, ensuring we keep only complete standalone filing periods and
-    # excluding prior-year carryforward data and supplementary disclosures.
+    # Temp table of known fiscal year-end dates per CIK.
     src_conn.execute(
         "CREATE TEMP TABLE _annual_periods (cik TEXT, period TEXT, "
         "PRIMARY KEY (cik, period))"
@@ -128,81 +150,124 @@ def _build_facts(
     src_conn.execute(
         "INSERT OR IGNORE INTO _annual_periods SELECT cik, period FROM sub"
     )
-    src_conn.commit()
 
-    cursor = src_conn.execute("""
-        SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom, COALESCE(CAST(n.value AS REAL), 0.0) AS value,
-               p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth
-        FROM (
-            -- Step 1: canonical adsh per (cik, ddate) — most recently filed adsh
-            -- that has any annual fact for that date. One filing is authoritative
-            -- for each fiscal period, preventing tag mixing when a company renames
-            -- XBRL tags between filings. Only fiscal year-end dates are included
-            -- (ddate must appear as sub.period for that CIK), which excludes
-            -- prior-year carryforward data, interim BS snapshots, and off-cycle
-            -- supplementary disclosures.
-            SELECT cik, ddate, adsh
-            FROM (
-                SELECT s.cik, n.ddate, n.adsh,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY s.cik, n.ddate
-                           ORDER BY s.filed DESC, s.adsh DESC
-                       ) AS rn
-                FROM num n
-                JOIN sub s ON n.adsh = s.adsh
-                WHERE n.segments IS NULL AND n.coreg IS NULL
-                  AND n.qtrs IN (0, 4)
-                  AND EXISTS (
-                      SELECT 1 FROM temp._annual_periods ap
-                      WHERE ap.cik = s.cik AND ap.period = n.ddate
-                  )
-            ) WHERE rn = 1
-        ) ca
-        -- Step 2: all num facts from that canonical adsh for that ddate
-        JOIN num n  ON n.adsh = ca.adsh AND n.ddate = ca.ddate
-                      AND n.segments IS NULL AND n.coreg IS NULL AND n.qtrs IN (0, 4)
-        -- Step 3: pre join — restricts to IS/BS/CF and provides display ordering
-        JOIN (
-            SELECT adsh, tag, stmt, report, line, plabel, negating, inpth FROM (
-                SELECT adsh, tag, stmt, report, line, plabel, negating, inpth,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY adsh, tag, stmt
-                           ORDER BY report, line
-                       ) AS rn
-                FROM pre WHERE stmt IN ('IS', 'BS', 'CF')
-            ) WHERE rn = 1
-        ) p ON p.adsh = ca.adsh AND p.tag = n.tag
+    # Canonical adsh per (cik, ddate) — materialised once, used by both passes.
+    src_conn.execute(
+        "CREATE TEMP TABLE _canonical_adsh "
+        "(cik TEXT, ddate TEXT, adsh TEXT, PRIMARY KEY (cik, ddate))"
+    )
+    src_conn.execute("""
+        INSERT INTO _canonical_adsh
+        SELECT cik, ddate, adsh FROM (
+            SELECT s.cik, n.ddate, n.adsh,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.cik, n.ddate
+                       ORDER BY s.filed DESC, s.adsh DESC
+                   ) AS rn
+            FROM num n
+            JOIN sub s ON n.adsh = s.adsh
+            WHERE n.segments IS NULL AND n.coreg IS NULL
+              AND n.qtrs IN (0, 4)
+              AND EXISTS (
+                  SELECT 1 FROM temp._annual_periods ap
+                  WHERE ap.cik = s.cik AND ap.period = n.ddate
+              )
+        ) WHERE rn = 1
     """)
+    src_conn.commit()
 
     total = 0
     t0 = time.time()
 
-    while True:
-        batch = cursor.fetchmany(BATCH_SIZE)
-        if not batch:
-            break
+    def _insert_batch(cursor) -> int:
+        count = 0
+        while True:
+            batch = cursor.fetchmany(BATCH_SIZE)
+            if not batch:
+                break
+            enriched = [
+                (cik, tag, stmt, ddate, qtrs, report, line,
+                 tag_label.get(tag), plabel, negating, inpth, uom, value)
+                for cik, tag, ddate, qtrs, uom, value,
+                    stmt, report, line, plabel, negating, inpth in batch
+            ]
+            mart_conn.executemany(
+                "INSERT OR IGNORE INTO facts"
+                "(cik, tag, stmt, ddate, qtrs, report, line,"
+                " label, plabel, negating, inpth, uom, value) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                enriched,
+            )
+            mart_conn.commit()
+            count += len(batch)
+            elapsed = time.time() - t0
+            print(f"  facts: {total + count:,} rows  ({elapsed:.0f}s)", end="\r", flush=True)
+        return count
 
-        enriched = [
-            (cik, tag, stmt, ddate, qtrs, report, line,
-             tag_label.get(tag), plabel, negating, inpth, uom, value)
-            for cik, tag, ddate, qtrs, uom, value,
-                stmt, report, line, plabel, negating, inpth in batch
-        ]
-        mart_conn.executemany(
-            "INSERT OR IGNORE INTO facts"
-            "(cik, tag, stmt, ddate, qtrs, report, line,"
-            " label, plabel, negating, inpth, uom, value) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            enriched,
+    # --- Primary pass: null-segment rows ---
+    cursor = src_conn.execute(f"""
+        SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom,
+               COALESCE(CAST(n.value AS REAL), 0.0) AS value,
+               p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth
+        FROM temp._canonical_adsh ca
+        JOIN num n ON n.adsh = ca.adsh AND n.ddate = ca.ddate
+                   AND n.segments IS NULL AND n.coreg IS NULL AND n.qtrs IN (0, 4)
+        JOIN ({_PRE_SUBQUERY}) p ON p.adsh = ca.adsh AND p.tag = n.tag
+    """)
+    total += _insert_batch(cursor)
+
+    # --- Segmented fallback: eq_count=1 rows ---
+    # Sum all eq_count=1 rows, excluding ConsolidationItems= rows (those are subtotals
+    # of the eq_count=2 business segment breakdown, not independent peer values).
+    # Fallback: if all eq_count=1 rows for a group are ConsolidationItems=, include
+    # them anyway (nothing else available).
+    # INSERT OR IGNORE skips any tag already inserted by the primary pass.
+    seg_cursor = src_conn.execute(f"""
+        WITH seg1 AS (
+            SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom,
+                   COALESCE(CAST(n.value AS REAL), 0.0) AS value,
+                   n.segments,
+                   p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth,
+                   SUM(CASE WHEN n.segments NOT LIKE 'ConsolidationItems=%' THEN 1 ELSE 0 END)
+                       OVER (PARTITION BY ca.cik, n.tag, n.ddate, n.qtrs, p.stmt) AS non_consol_count
+            FROM temp._canonical_adsh ca
+            JOIN num n ON n.adsh = ca.adsh AND n.ddate = ca.ddate
+                       AND n.coreg IS NULL AND n.qtrs IN (0, 4)
+                       AND n.segments IS NOT NULL
+                       AND (length(n.segments) - length(replace(n.segments, '=', ''))) = 1
+            JOIN ({_PRE_SUBQUERY}) p ON p.adsh = ca.adsh AND p.tag = n.tag
         )
-        mart_conn.commit()
-        total += len(batch)
+        SELECT cik, tag, ddate, qtrs, uom, SUM(value) AS value,
+               stmt, report, line, plabel, negating, inpth
+        FROM seg1
+        WHERE (non_consol_count > 0 AND segments NOT LIKE 'ConsolidationItems=%')
+           OR  non_consol_count = 0
+        GROUP BY cik, tag, ddate, qtrs, uom, stmt, report, line, plabel, negating, inpth
+    """)
+    seg_added = _insert_batch(seg_cursor)
+    total += seg_added
 
-        elapsed = time.time() - t0
-        print(f"  facts: {total:,} rows  ({elapsed:.0f}s)", end="\r", flush=True)
-
-    print(f"  facts: {total:,} rows  ({time.time() - t0:.0f}s)  DONE        ")
+    print(f"  facts: {total:,} rows  ({time.time() - t0:.0f}s)  DONE  "
+          f"(+{seg_added:,} from segmented fallback)        ")
     return total
+
+
+# ---------------------------------------------------------------------------
+# Build sic_codes
+# ---------------------------------------------------------------------------
+
+def _build_sic_codes(mart_conn: sqlite3.Connection) -> int:
+    from sec_core.sic import SIC_CODES
+    rows = [
+        (sic, info["description"], info["office"], info["division"], info["division_name"])
+        for sic, info in SIC_CODES.items()
+    ]
+    mart_conn.executemany(
+        "INSERT INTO sic_codes VALUES (?, ?, ?, ?, ?)", rows
+    )
+    mart_conn.commit()
+    print(f"  sic_codes: {len(rows):,}")
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +276,8 @@ def _build_facts(
 
 def _build_companies(src_conn: sqlite3.Connection, mart_conn: sqlite3.Connection) -> int:
     rows = src_conn.execute("""
-        SELECT cik, name FROM (
-            SELECT cik, name,
+        SELECT cik, name, sic FROM (
+            SELECT cik, name, sic,
                    ROW_NUMBER() OVER (
                        PARTITION BY cik
                        ORDER BY filed DESC, adsh DESC
@@ -222,7 +287,7 @@ def _build_companies(src_conn: sqlite3.Connection, mart_conn: sqlite3.Connection
         WHERE rn = 1
     """).fetchall()
 
-    mart_conn.executemany("INSERT INTO companies VALUES (?, ?)", rows)
+    mart_conn.executemany("INSERT INTO companies VALUES (?, ?, ?)", rows)
     mart_conn.commit()
     print(f"  companies: {len(rows):,}")
     return len(rows)
@@ -360,6 +425,9 @@ def build_annual_mart(
         print("Building canonical label map ...")
         tag_label = _build_canonical_label(src_conn)
         print(f"  {len(tag_label):,} labels found")
+
+        print("Building sic_codes ...")
+        _build_sic_codes(mart_conn)
 
         print("Building companies ...")
         _build_companies(src_conn, mart_conn)
