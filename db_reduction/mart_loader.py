@@ -57,10 +57,11 @@ CREATE TABLE facts (
     line     INTEGER,           -- presentation line number (for ordering)
     label    TEXT,              -- tlabel from tag (taxonomy label)
     plabel   TEXT,              -- presentation label from pre (filing-specific)
-    negating TEXT,              -- '1' if value should be sign-flipped for display
-    inpth    TEXT,              -- '1' if this line is in-parenthesis (subtotal/header)
-    uom      TEXT,
-    value    REAL,
+    negating      TEXT,              -- '1' if value should be sign-flipped for display
+    inpth         TEXT,              -- '1' if this line is in-parenthesis (subtotal/header)
+    uom           TEXT,
+    value         REAL,
+    display_value REAL,              -- value with sign flipped when negating='1'
     PRIMARY KEY (cik, tag, stmt, ddate, qtrs)
 );
 """
@@ -187,15 +188,16 @@ def _build_facts(
                 break
             enriched = [
                 (cik, tag, stmt, ddate, qtrs, report, line,
-                 tag_label.get(tag), plabel, negating, inpth, uom, value)
+                 tag_label.get(tag), plabel, negating, inpth, uom, value,
+                 value * -1 if negating == '1' else value)
                 for cik, tag, ddate, qtrs, uom, value,
                     stmt, report, line, plabel, negating, inpth in batch
             ]
             mart_conn.executemany(
                 "INSERT OR IGNORE INTO facts"
                 "(cik, tag, stmt, ddate, qtrs, report, line,"
-                " label, plabel, negating, inpth, uom, value) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " label, plabel, negating, inpth, uom, value, display_value) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 enriched,
             )
             mart_conn.commit()

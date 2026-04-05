@@ -98,15 +98,17 @@ One canonical value per `(company, tag, fiscal-date)`, IS/BS/CF only.
 -- sic_codes: 444 SEC-published SIC codes with description, office, division (A–J), division_name
 -- companies: most recent name and SIC code per CIK (sic FK → sic_codes)
 -- periods:   (cik, ddate) pairs with fy label
--- facts:     (cik, tag, label, stmt, ddate, qtrs, uom, value)
+-- facts:     (cik, tag, label, stmt, ddate, qtrs, report, line, plabel, negating, inpth, uom, value, display_value)
 ```
+
+**`display_value`** is `value` with its sign flipped when `negating='1'` (presentation-context sign convention applied). Use `display_value` for rendering; use `value` for arithmetic.
 
 **LLM query pattern** (CIK + year + statement):
 ```sql
-SELECT f.label, f.value, f.uom
+SELECT f.label, f.display_value, f.uom
 FROM facts f JOIN periods p ON f.cik = p.cik AND f.ddate = p.ddate
 WHERE f.cik = '320193' AND p.fy = '2024' AND f.stmt = 'IS'
-ORDER BY f.tag;
+ORDER BY f.report, f.line;
 ```
 
 **Dedup rule:** most recently filed `adsh` wins per `(cik, tag, ddate, qtrs)`.
