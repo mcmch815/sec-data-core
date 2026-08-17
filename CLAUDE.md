@@ -4,11 +4,11 @@ Shared SEC data layer consumed by `sec-structured` and `sec-llm` (and any future
 
 ## Location
 
-`/home/chris/sec-data-core/`
+`/home/chris/miniconda3/envs/tf/sec-data-core/`
 
 Install into any consumer project's conda env:
 ```bash
-conda run -n tf pip install -e /home/chris/sec-data-core
+conda run -n tf pip install -e /home/chris/miniconda3/envs/tf/sec-data-core
 ```
 
 ## What lives here
@@ -76,7 +76,7 @@ Key filtering rules for correct value extraction:
 ## Rebuilding the DB
 
 ```bash
-cd /home/chris/sec-data-core
+cd /home/chris/miniconda3/envs/tf/sec-data-core
 conda run -n tf python -m sec_core.db_loader          # full rebuild
 conda run -n tf python -m sec_core.db_loader 2025q4   # reload one quarter
 ```
@@ -84,7 +84,7 @@ conda run -n tf python -m sec_core.db_loader 2025q4   # reload one quarter
 ## Building / Rebuilding the Annual Mart (`sec_annual.db`)
 
 ```bash
-cd /home/chris/sec-data-core
+cd /home/chris/miniconda3/envs/tf/sec-data-core
 conda run -n tf python -m db_reduction.mart_loader           # build (skip if exists)
 conda run -n tf python -m db_reduction.mart_loader --force   # rebuild from scratch
 conda run -n tf python -m db_reduction.verify_mart           # cross-check 7 checks
