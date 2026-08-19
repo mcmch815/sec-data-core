@@ -21,13 +21,14 @@ from sec_core.db_loader import (
 from db_reduction.mart_loader import build_annual_mart
 from db_reduction.verify_mart import main as verify_main
 
-TEST_QUARTERS = ["2024q4", "2025q4"]
+TEST_QUARTERS = ["2024q1", "2024q4", "2025q1", "2025q4"]
 
 TEST_DIR        = ROOT / "test_db"
 TEST_VIEWER_DB  = TEST_DIR / "test_viewer.db"
 TEST_ANNUAL_DB  = TEST_DIR / "test_annual.db"
 
 # With sub.period filtering, only actual filing dates are included — Apple has 2 (FY24+FY25).
+# Apple files 10-Ks in Q4 only, so adding Q1 quarters doesn't add new Apple periods.
 MIN_APPLE_PERIODS = 2
 
 

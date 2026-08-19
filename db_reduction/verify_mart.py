@@ -42,35 +42,42 @@ def _fail(name: str, msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 def check_amendment_supersession(src: sqlite3.Connection, mart: sqlite3.Connection) -> bool:
-    """Verify that when a 10-K/A is the most recently filed document for a fact,
-    the mart holds the 10-K/A value (not an older 10-K value).
-    Note: a subsequent 10-K correctly supersedes a 10-K/A — the dedup is by filed date,
-    not by form type.
+    """Verify that when a 10-K and a 10-K/A both exist for a fact, the mart holds
+    the original 10-K value (earliest-wins dedup). The original filing is the signal;
+    amendments are excluded to avoid look-ahead bias in ML use cases.
     """
     name = "amendment_supersession"
 
-    # Find facts where the most recently filed adsh is a 10-K/A
-    latest_amendments = src.execute("""
+    # Find facts where an original 10-K exists and a later 10-K/A also exists.
+    original_filings = src.execute("""
         SELECT cik, tag, ddate, qtrs, value FROM (
             SELECT s.cik, n.tag, n.ddate, n.qtrs, CAST(n.value AS REAL) AS value, s.form,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.cik, n.tag, n.ddate, n.qtrs
-                       ORDER BY s.filed DESC, s.adsh DESC
+                       ORDER BY s.filed ASC, s.adsh ASC
                    ) AS rn
             FROM num n
             JOIN sub s ON n.adsh = s.adsh
             WHERE n.segments IS NULL AND n.coreg IS NULL AND n.qtrs IN (0, 4)
+              AND EXISTS (
+                  SELECT 1 FROM sub s2
+                  JOIN num n2 ON n2.adsh = s2.adsh
+                  WHERE s2.cik = s.cik AND s2.form = '10-K/A'
+                    AND n2.tag = n.tag AND n2.ddate = n.ddate AND n2.qtrs = n.qtrs
+                    AND n2.segments IS NULL AND n2.coreg IS NULL
+                    AND s2.filed > s.filed
+              )
         )
-        WHERE rn = 1 AND form = '10-K/A'
+        WHERE rn = 1 AND form = '10-K'
         LIMIT 100
     """).fetchall()
 
-    if not latest_amendments:
-        _pass(name, "no 10-K/A is the most recently filed for any fact (nothing to verify)")
+    if not original_filings:
+        _pass(name, "no (10-K, 10-K/A) pairs found for same fact (nothing to verify)")
         return True
 
     failures = []
-    for cik, tag, ddate, qtrs, expected_val in latest_amendments:
+    for cik, tag, ddate, qtrs, expected_val in original_filings:
         row = mart.execute(
             "SELECT value FROM facts WHERE cik=? AND tag=? AND ddate=? AND qtrs=?",
             (cik, tag, ddate, qtrs),
@@ -87,7 +94,7 @@ def check_amendment_supersession(src: sqlite3.Connection, mart: sqlite3.Connecti
     if failures:
         _fail(name, "; ".join(failures[:3]))
         return False
-    _pass(name, f"verified {len(latest_amendments)} facts where 10-K/A is most recent filing")
+    _pass(name, f"verified {len(original_filings)} facts where original 10-K is kept over 10-K/A")
     return True
 
 
