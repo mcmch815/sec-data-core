@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pandas as pd
 
-# Point sec_core at the test mart DB
-ROOT = Path("/home/chris/miniconda3/envs/tf/sec-data-core")
+# Point sec_core at the test mart DB (repo root — works on any OS)
+ROOT = Path(__file__).resolve().parent.parent
 TEST_MART = ROOT / "test_db" / "test_annual.db"
 assert TEST_MART.exists(), f"Test mart not found: {TEST_MART}"
 

@@ -4,11 +4,11 @@ Shared SEC data layer consumed by `sec-structured` and `sec-llm` (and any future
 
 ## Location
 
-`/home/chris/miniconda3/envs/tf/sec-data-core/`
+`E:\SEC_projects\sec-data-core\`
 
-Install into any consumer project's conda env:
-```bash
-conda run -n tf pip install -e /home/chris/miniconda3/envs/tf/sec-data-core
+Install into the shared `sec` venv (also used by `sec-llm` and `sec_structured_project`):
+```powershell
+E:\SEC_projects\.venv-sec\Scripts\pip.exe install -e E:\SEC_projects\sec-data-core
 ```
 
 ## Setup / Replication
@@ -60,8 +60,8 @@ download. `SEC_DATA_ROOT` overrides the install root.
 ## Path resolution
 
 `sec_core/paths.py` defaults to the `sec-data-core/` root. Override with env var:
-```bash
-export SEC_DATA_ROOT=/path/to/sec-data-core
+```powershell
+$env:SEC_DATA_ROOT = "E:\path\to\sec-data-core"
 ```
 
 ## SQLite Schema (`sec_viewer.db`)
@@ -109,19 +109,19 @@ The 2025 GAAP presentation parquet contains multiple role variants per statement
 
 ## Rebuilding the DB
 
-```bash
-cd /home/chris/miniconda3/envs/tf/sec-data-core
-conda run -n tf python -m sec_core.db_loader          # full rebuild
-conda run -n tf python -m sec_core.db_loader 2025q4   # reload one quarter
+```powershell
+cd E:\SEC_projects\sec-data-core
+E:\SEC_projects\.venv-sec\Scripts\python.exe -m sec_core.db_loader          # full rebuild
+E:\SEC_projects\.venv-sec\Scripts\python.exe -m sec_core.db_loader 2025q4   # reload one quarter
 ```
 
 ## Building / Rebuilding the Annual Mart (`sec_annual.db`)
 
-```bash
-cd /home/chris/miniconda3/envs/tf/sec-data-core
-conda run -n tf python -m db_reduction.mart_loader           # build (skip if exists)
-conda run -n tf python -m db_reduction.mart_loader --force   # rebuild from scratch
-conda run -n tf python -m db_reduction.verify_mart           # cross-check 7 checks
+```powershell
+cd E:\SEC_projects\sec-data-core
+E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.mart_loader           # build (skip if exists)
+E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.mart_loader --force   # rebuild from scratch
+E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.verify_mart           # cross-check 7 checks
 ```
 
 ## Annual Mart Schema (`sec_annual.db`)

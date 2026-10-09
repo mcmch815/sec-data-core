@@ -373,8 +373,6 @@ def statement():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import socket
-    host_ip = socket.gethostbyname(socket.gethostname())
     print(f"DB: {_MART_PATH}")
-    print(f"Open: http://{host_ip}:5050")
+    print("Open: http://localhost:5050")
     app.run(host="0.0.0.0", port=5050, debug=True)
