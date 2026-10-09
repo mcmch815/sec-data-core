@@ -11,6 +11,24 @@ Install into any consumer project's conda env:
 conda run -n tf pip install -e /home/chris/miniconda3/envs/tf/sec-data-core
 ```
 
+## Setup / Replication
+
+Fresh machine: follow `README.md`. In short:
+
+```bash
+conda env create -f environment.yml
+conda run -n tf pip install -e .
+# Download Data/<quarter>/{sub,tag,num,pre}.txt for 2009q1–2025q4 from the SEC
+# Financial Statement Data Sets (see README.md), then:
+conda run -n tf python -m sec_core.db_loader
+conda run -n tf python -m db_reduction.mart_loader
+conda run -n tf python -m db_reduction.verify_mart
+```
+
+`Data/`, `sec_viewer.db` and `sec_annual.db` are gitignored and rebuilt from the
+raw SEC quarterly zips. The GAAP taxonomy ODS/parquets are committed and need no
+download. `SEC_DATA_ROOT` overrides the install root.
+
 ## What lives here
 
 | Path | Contents |
@@ -60,6 +78,22 @@ Key filtering rules for correct value extraction:
 - `qtrs = 0` — Balance Sheet (instant values)
 - `qtrs = 4` — Income Statement / Cash Flow (full-year values)
 
+## SIC Office → Taxonomy Presentation Role
+
+A company's `office` in `sic_codes` determines which taxonomy presentation role applies to its statements. **Not yet implemented in code** — mapping is planned.
+
+The 2025 GAAP presentation parquet contains multiple role variants per statement type identified by the `definition` column. The `office` field is the primary signal for selecting the correct role.
+
+**Balance Sheet** (documented; see also `sec-llm/CLAUDE.md`):
+
+| Office / SIC | Role |
+|---|---|
+| `"Office of Finance"` (SIC 6000–6411: banks, insurance, savings) | Unclassified (`108000`/`108200`/`112000`) |
+| SIC 1531 `OPERATIVE BUILDERS` | Unclassified (multi-year inventory cycles) |
+| Most others | Classified (`104000`) |
+
+**Income Statement / Cash Flows:** industry-specific variants exist (Interest Based, Insurance Based, Securities Based, Real Estate, REITs, Direct Method) but the `office` → role mapping is **not yet designed**.
+
 ## Taxonomy Module
 
 `load_taxonomy()` returns:
@@ -98,7 +132,11 @@ One canonical value per `(company, tag, fiscal-date)`, IS/BS/CF only.
 -- sic_codes: 444 SEC-published SIC codes with description, office, division (A–J), division_name
 -- companies: most recent name and SIC code per CIK (sic FK → sic_codes)
 -- periods:   (cik, ddate) pairs with fy label
--- facts:     (cik, tag, label, stmt, ddate, qtrs, report, line, plabel, negating, inpth, uom, value, display_value)
+-- facts:     (cik, tag, label, stmt, ddate, qtrs, report, line, plabel, negating, inpth, version, uom, value, display_value, filed, crdr, iord, datatype)
+--            crdr: 'C'=credit, 'D'=debit; iord: 'I'=instant, 'D'=duration; NULL for custom/unknown tags
+--            version: taxonomy version string from pre (e.g. 'us-gaap/2023')
+--            inpth: '1' if the line is a footnote (appears in-parenthesis in the filing, not on the face of the statement)
+--            filed: date the original 10-K was submitted to SEC (YYYYMMDD) — use for point-in-time filtering
 ```
 
 **`display_value`** is `value` with its sign flipped when `negating='1'` (presentation-context sign convention applied). Use `display_value` for rendering; use `value` for arithmetic.
@@ -111,7 +149,7 @@ WHERE f.cik = '320193' AND p.fy = '2024' AND f.stmt = 'IS'
 ORDER BY f.report, f.line;
 ```
 
-**Dedup rule:** most recently filed `adsh` wins per `(cik, tag, ddate, qtrs)`.
-Handles 10-K vs 10-K/A amendments and prior-year carryforwards.
+**Dedup rule:** earliest filed `adsh` wins per `(cik, tag, ddate, qtrs)` — original 10-K is preferred over 10-K/A amendments.
+`filed` on each fact row records when that value became publicly available (YYYYMMDD); use `WHERE filed <= :as_of_date` for point-in-time ML queries.
 
 **Access:** `from sec_core import get_connection_mart` (raises `FileNotFoundError` if not built).

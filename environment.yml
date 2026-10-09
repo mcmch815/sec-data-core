@@ -1,0 +1,15 @@
+# Reproducible conda environment for sec-data-core.
+#
+#   conda env create -f environment.yml          # first time
+#   conda env update -f environment.yml --prune  # refresh existing env
+#
+# Must be run from the repo root so the relative `-r requirements.txt` resolves.
+# requirements.txt is the single source of truth for pinned versions.
+name: tf
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -r requirements.txt

@@ -1,0 +1,8 @@
+# Locked runtime dependencies for sec-data-core.
+# This is the single source of truth for exact versions, consumed by both
+# environment.yml (conda env `tf`) and, optionally, a plain pip install.
+# Regenerate from a known-good env with: conda run -n tf pip freeze
+pandas==2.3.3
+pyarrow==23.0.1
+odfpy==1.4.1
+flask==3.1.2
