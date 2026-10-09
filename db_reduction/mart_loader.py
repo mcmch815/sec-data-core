@@ -58,10 +58,15 @@ CREATE TABLE facts (
     label    TEXT,              -- tlabel from tag (taxonomy label)
     plabel   TEXT,              -- presentation label from pre (filing-specific)
     negating      TEXT,              -- '1' if value should be sign-flipped for display
-    inpth         TEXT,              -- '1' if this line is in-parenthesis (subtotal/header)
+    inpth         TEXT,              -- '1' if this line is a footnote (in-parenthesis in the filing)
+    version       TEXT,              -- taxonomy version from pre (e.g. 'us-gaap/2023')
     uom           TEXT,
     value         REAL,
     display_value REAL,              -- value with sign flipped when negating='1'
+    filed         TEXT,              -- date the source filing was submitted (YYYYMMDD)
+    crdr          TEXT,              -- 'C' (credit) or 'D' (debit) from tag taxonomy
+    iord          TEXT,              -- 'I' (instant) or 'D' (duration) from tag taxonomy
+    datatype      TEXT,              -- XBRL datatype (e.g. 'monetary') from tag taxonomy
     PRIMARY KEY (cik, tag, stmt, ddate, qtrs)
 );
 """
@@ -88,21 +93,18 @@ def _create_mart_indexes(mart_conn: sqlite3.Connection) -> None:
 # Canonical label mapping: tag -> tlabel
 # ---------------------------------------------------------------------------
 
-def _build_canonical_label(src_conn: sqlite3.Connection) -> dict[str, str]:
-    """Return {tag: tlabel} using the most recent taxonomy version."""
-    rows = src_conn.execute("""
-        SELECT tag, tlabel FROM (
-            SELECT tag, tlabel,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY tag
-                       ORDER BY version DESC, quarter DESC
-                   ) AS rn
-            FROM tag
-            WHERE tlabel IS NOT NULL
-        )
-        WHERE rn = 1
-    """).fetchall()
-    return dict(rows)
+def _build_canonical_label(src_conn: sqlite3.Connection) -> dict[tuple, tuple]:
+    """Return {(tag, version): (tlabel, crdr, iord, datatype)}.
+
+    Keyed by (tag, version) so custom tags — where version is the accession
+    number and crdr can differ per filer — always resolve to the correct row
+    for the specific filing, not a lexicographically-lucky winner across filers.
+    """
+    rows = src_conn.execute(
+        "SELECT tag, version, tlabel, crdr, iord, datatype FROM tag WHERE tlabel IS NOT NULL"
+    ).fetchall()
+    return {(tag, version): (tlabel, crdr, iord, datatype)
+            for tag, version, tlabel, crdr, iord, datatype in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +112,8 @@ def _build_canonical_label(src_conn: sqlite3.Connection) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 _PRE_SUBQUERY = """
-    SELECT adsh, tag, stmt, report, line, plabel, negating, inpth FROM (
-        SELECT adsh, tag, stmt, report, line, plabel, negating, inpth,
+    SELECT adsh, tag, stmt, report, line, plabel, negating, inpth, version FROM (
+        SELECT adsh, tag, stmt, report, line, plabel, negating, inpth, version,
                ROW_NUMBER() OVER (
                    PARTITION BY adsh, tag, stmt
                    ORDER BY report, line
@@ -124,7 +126,7 @@ _PRE_SUBQUERY = """
 def _build_facts(
     src_conn: sqlite3.Connection,
     mart_conn: sqlite3.Connection,
-    tag_label: dict[str, str],
+    tag_label: dict[tuple, tuple],
 ) -> int:
     """Stream deduped facts from src → mart. Returns row count inserted.
 
@@ -152,18 +154,19 @@ def _build_facts(
         "INSERT OR IGNORE INTO _annual_periods SELECT cik, period FROM sub"
     )
 
-    # Canonical adsh per (cik, ddate) — materialised once, used by both passes.
+    # Canonical adsh per (cik, ddate) — earliest filing wins (original > amendment).
+    # filed is carried so it can be stored on every fact row for point-in-time queries.
     src_conn.execute(
         "CREATE TEMP TABLE _canonical_adsh "
-        "(cik TEXT, ddate TEXT, adsh TEXT, PRIMARY KEY (cik, ddate))"
+        "(cik TEXT, ddate TEXT, adsh TEXT, filed TEXT, PRIMARY KEY (cik, ddate))"
     )
     src_conn.execute("""
         INSERT INTO _canonical_adsh
-        SELECT cik, ddate, adsh FROM (
-            SELECT s.cik, n.ddate, n.adsh,
+        SELECT cik, ddate, adsh, filed FROM (
+            SELECT s.cik, n.ddate, n.adsh, s.filed,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.cik, n.ddate
-                       ORDER BY s.filed DESC, s.adsh DESC
+                       ORDER BY s.filed ASC, s.adsh ASC
                    ) AS rn
             FROM num n
             JOIN sub s ON n.adsh = s.adsh
@@ -186,18 +189,22 @@ def _build_facts(
             batch = cursor.fetchmany(BATCH_SIZE)
             if not batch:
                 break
-            enriched = [
-                (cik, tag, stmt, ddate, qtrs, report, line,
-                 tag_label.get(tag), plabel, negating, inpth, uom, value,
-                 value * -1 if negating == '1' else value)
-                for cik, tag, ddate, qtrs, uom, value,
-                    stmt, report, line, plabel, negating, inpth in batch
-            ]
+            enriched = []
+            for cik, tag, ddate, qtrs, uom, value, stmt, report, line, plabel, negating, inpth, version, filed in batch:
+                tag_meta = tag_label.get((tag, version))
+                tlabel, crdr, iord, datatype = tag_meta if tag_meta else (None, None, None, None)
+                enriched.append((
+                    cik, tag, stmt, ddate, qtrs, report, line,
+                    tlabel, plabel, negating, inpth, version, uom, value,
+                    value * -1 if negating == '1' else value,
+                    filed, crdr, iord, datatype,
+                ))
             mart_conn.executemany(
                 "INSERT OR IGNORE INTO facts"
                 "(cik, tag, stmt, ddate, qtrs, report, line,"
-                " label, plabel, negating, inpth, uom, value, display_value) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " label, plabel, negating, inpth, version, uom, value, display_value,"
+                " filed, crdr, iord, datatype) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 enriched,
             )
             mart_conn.commit()
@@ -210,7 +217,8 @@ def _build_facts(
     cursor = src_conn.execute(f"""
         SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom,
                COALESCE(CAST(n.value AS REAL), 0.0) AS value,
-               p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth
+               p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth, p.version,
+               ca.filed
         FROM temp._canonical_adsh ca
         JOIN num n ON n.adsh = ca.adsh AND n.ddate = ca.ddate
                    AND n.segments IS NULL AND n.coreg IS NULL AND n.qtrs IN (0, 4)
@@ -229,7 +237,8 @@ def _build_facts(
             SELECT ca.cik, n.tag, n.ddate, n.qtrs, n.uom,
                    COALESCE(CAST(n.value AS REAL), 0.0) AS value,
                    n.segments,
-                   p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth,
+                   p.stmt, p.report, p.line, p.plabel, p.negating, p.inpth, p.version,
+                   ca.filed,
                    SUM(CASE WHEN n.segments NOT LIKE 'ConsolidationItems=%' THEN 1 ELSE 0 END)
                        OVER (PARTITION BY ca.cik, n.tag, n.ddate, n.qtrs, p.stmt) AS non_consol_count
             FROM temp._canonical_adsh ca
@@ -240,11 +249,11 @@ def _build_facts(
             JOIN ({_PRE_SUBQUERY}) p ON p.adsh = ca.adsh AND p.tag = n.tag
         )
         SELECT cik, tag, ddate, qtrs, uom, SUM(value) AS value,
-               stmt, report, line, plabel, negating, inpth
+               stmt, report, line, plabel, negating, inpth, version, filed
         FROM seg1
         WHERE (non_consol_count > 0 AND segments NOT LIKE 'ConsolidationItems=%')
            OR  non_consol_count = 0
-        GROUP BY cik, tag, ddate, qtrs, uom, stmt, report, line, plabel, negating, inpth
+        GROUP BY cik, tag, ddate, qtrs, uom, stmt, report, line, plabel, negating, inpth, version, filed
     """)
     seg_added = _insert_batch(seg_cursor)
     total += seg_added
