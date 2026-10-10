@@ -4,11 +4,14 @@ Shared SEC data layer consumed by `sec-structured` and `sec-llm` (and any future
 
 ## Location
 
-`E:\SEC_projects\sec-data-core\`
+Wherever you clone the repo — no absolute paths are assumed. The package resolves
+its data root automatically (see **Path resolution** below) and can be overridden
+with `SEC_DATA_ROOT`.
 
-Install into the shared `sec` venv (also used by `sec-llm` and `sec_structured_project`):
-```powershell
-E:\SEC_projects\.venv-sec\Scripts\pip.exe install -e E:\SEC_projects\sec-data-core
+Install into the conda env `tf` (the shared env on this machine; consumer projects
+such as `sec-structured`/`sec-llm` can also install into their own env):
+```bash
+conda run -n tf pip install -e .
 ```
 
 ## Setup / Replication
@@ -59,10 +62,27 @@ download. `SEC_DATA_ROOT` overrides the install root.
 
 ## Path resolution
 
-`sec_core/paths.py` defaults to the `sec-data-core/` root. Override with env var:
-```powershell
-$env:SEC_DATA_ROOT = "E:\path\to\sec-data-core"
+`sec_core/paths.py` defaults to the `sec-data-core/` root (the parent of the
+package). Override with the `SEC_DATA_ROOT` env var:
+```bash
+export SEC_DATA_ROOT=/path/to/sec-data-core
 ```
+
+## Portability (keep tracked files machine-neutral)
+
+Tracked files must stay OS- and machine-neutral so a Windows checkout and a Linux
+checkout don't diverge and produce merge conflicts:
+
+- **No absolute paths** (`C:\`, `E:\`, `/home/...`) in tracked files. Resolve the
+  data root via `SEC_DATA_ROOT` or repo-relative paths.
+- **One environment convention:** the conda env `tf` (`environment.yml` /
+  `requirements.txt`). Don't bake a specific venv path into scripts.
+- **OS-specific launchers live in their own files** (`viewer/restart.sh` for Linux).
+  Don't hardcode interpreter paths inside them — call `conda run -n tf`.
+- **Line endings** are normalized to LF by `.gitattributes`, so CRLF checkouts
+  don't churn.
+- Prefer generating large data (`Data/`, `*.db`) rather than committing it; it is
+  gitignored and rebuilt with `README.md`.
 
 ## SQLite Schema (`sec_viewer.db`)
 
@@ -109,19 +129,19 @@ The 2025 GAAP presentation parquet contains multiple role variants per statement
 
 ## Rebuilding the DB
 
-```powershell
-cd E:\SEC_projects\sec-data-core
-E:\SEC_projects\.venv-sec\Scripts\python.exe -m sec_core.db_loader          # full rebuild
-E:\SEC_projects\.venv-sec\Scripts\python.exe -m sec_core.db_loader 2025q4   # reload one quarter
+Run from the repo root:
+```bash
+conda run -n tf python -m sec_core.db_loader          # full rebuild
+conda run -n tf python -m sec_core.db_loader 2025q4   # reload one quarter
 ```
 
 ## Building / Rebuilding the Annual Mart (`sec_annual.db`)
 
-```powershell
-cd E:\SEC_projects\sec-data-core
-E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.mart_loader           # build (skip if exists)
-E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.mart_loader --force   # rebuild from scratch
-E:\SEC_projects\.venv-sec\Scripts\python.exe -m db_reduction.verify_mart           # cross-check 7 checks
+Run from the repo root:
+```bash
+conda run -n tf python -m db_reduction.mart_loader           # build (skip if exists)
+conda run -n tf python -m db_reduction.mart_loader --force   # rebuild from scratch
+conda run -n tf python -m db_reduction.verify_mart           # cross-check 7 checks
 ```
 
 ## Annual Mart Schema (`sec_annual.db`)

@@ -1,0 +1,13 @@
+# Normalize line endings so Windows checkouts don't churn LF↔CRLF and cause
+# spurious diffs/merge conflicts against Linux.
+* text=auto eol=lf
+
+# Shell scripts must keep LF, or they break on Linux.
+*.sh text eol=lf
+
+# Binary assets — never text-normalize.
+*.parquet binary
+*.ods      binary
+*.db       binary
+*.db-wal   binary
+*.db-shm   binary

@@ -173,8 +173,8 @@ conda run -n tf python viewer/app.py                                  # sec_annu
 MART_DB=test_db/test_annual.db conda run -n tf python viewer/app.py   # test DB
 ```
 
-Serves on `http://<host>:5050`. On WSL2, `viewer/restart.sh` stops any existing
-instance and opens the browser automatically.
+Serves on `http://<host>:5050`. `viewer/restart.sh` stops any existing instance
+and (re)starts it in the background, logging to `viewer/viewer.log`.
 
 ---
 
