@@ -7,7 +7,7 @@ SQLite databases:
 | Database | Size | Contents |
 |---|---|---|
 | `sec_viewer.db` | ~16 GB | Raw 10-K/10-K/A store (`sub`, `num`, `pre`, `tag`) |
-| `sec_annual.db` | ~1 GB | Deduplicated annual mart, IS/BS/CF only (`sic_codes`, `companies`, `periods`, `facts`) |
+| `sec_annual.db` | ~2.8 GB | Deduplicated annual mart, IS/BS/CF only (`sic_codes`, `companies`, `periods`, `facts`) |
 
 The Python code and the GAAP taxonomy are in git. The **raw SEC data and the
 built databases are not** (they total tens of gigabytes), so a fresh clone needs
@@ -30,7 +30,7 @@ conda run -n tf python -m db_reduction.verify_mart
 ```
 
 > **Disk:** budget **~50 GB free** (raw `Data/` ≈27 GB, `sec_viewer.db` ≈16 GB,
-> `sec_annual.db` ≈1 GB).
+> `sec_annual.db` ≈2.8 GB).
 
 ---
 
@@ -43,7 +43,7 @@ conda run -n tf python -m db_reduction.verify_mart
 | `2025_GAAP_Taxonomy_Small.ods` + `..._Calculation.parquet` + `..._Presentation.parquet` | ✅ | `git clone` (no download) |
 | `Data/<quarter>/{sub,tag,num,pre}.txt` (~27 GB) | ❌ | download from the SEC |
 | `sec_viewer.db` (~16 GB) | ❌ | built from `Data/` |
-| `sec_annual.db` (~1 GB) | ❌ | built from `sec_viewer.db` |
+| `sec_annual.db` (~2.8 GB) | ❌ | built from `sec_viewer.db` |
 | `test_db/test_*.db` | ❌ | built from 4 quarters (fast smoke test) |
 
 The GAAP taxonomy is committed, so `load_taxonomy()` and

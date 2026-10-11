@@ -46,7 +46,7 @@ download. `SEC_DATA_ROOT` overrides the install root.
 | `db_reduction/verify_mart.py` | Cross-checks mart vs source (7 checks) |
 | `Data/` | Raw SEC quarterly files (2009q1–2025q4), ~27GB |
 | `sec_viewer.db` | SQLite built from `Data/`, ~16GB |
-| `sec_annual.db` | Deduplicated annual mart, IS/BS/CF only, ~200–400MB |
+| `sec_annual.db` | Deduplicated annual mart, IS/BS/CF only, ~2.8GB |
 | `2025_GAAP_Taxonomy_Small.ods` | GAAP 2025 taxonomy (Calculation + Presentation sheets) |
 | `2025_GAAP_Taxonomy_Small_Calculation.parquet` | Parquet cache of Calculation sheet |
 | `2025_GAAP_Taxonomy_Small_Presentation.parquet` | Parquet cache of Presentation sheet |

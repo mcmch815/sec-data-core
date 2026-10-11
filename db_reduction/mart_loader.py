@@ -184,7 +184,7 @@ def _build_facts(
     t0 = time.time()
 
     def _insert_batch(cursor) -> int:
-        count = 0
+        inserted = 0
         while True:
             batch = cursor.fetchmany(BATCH_SIZE)
             if not batch:
@@ -199,6 +199,7 @@ def _build_facts(
                     value * -1 if negating == '1' else value,
                     filed, crdr, iord, datatype,
                 ))
+            before = mart_conn.total_changes
             mart_conn.executemany(
                 "INSERT OR IGNORE INTO facts"
                 "(cik, tag, stmt, ddate, qtrs, report, line,"
@@ -208,10 +209,12 @@ def _build_facts(
                 enriched,
             )
             mart_conn.commit()
-            count += len(batch)
+            # Count rows actually inserted: INSERT OR IGNORE skips PK duplicates,
+            # so len(batch) would over-report. total_changes only counts real writes.
+            inserted += mart_conn.total_changes - before
             elapsed = time.time() - t0
-            print(f"  facts: {total + count:,} rows  ({elapsed:.0f}s)", end="\r", flush=True)
-        return count
+            print(f"  facts: {total + inserted:,} rows  ({elapsed:.0f}s)", end="\r", flush=True)
+        return inserted
 
     # --- Primary pass: null-segment rows ---
     cursor = src_conn.execute(f"""
