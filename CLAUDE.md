@@ -2,6 +2,23 @@
 
 Shared SEC data layer consumed by `sec-structured` and `sec-llm` (and any future projects).
 
+## Consumers and how changes land
+
+`sec-comparables` (the sibling checkout) is the main consumer and drives work here: its
+coordinator runs from `../sec-comparables` with this repo as a granted working directory, and
+its `GOAL.md` / `BACKLOG.md` hold the work (items tagged `repo: data-core`). Rules:
+
+* Code changes go through a worktree and a PR against `mcmch815/sec-data-core`; never commit to
+  `master` directly from an agent.
+* Agents never write the shared `sec_viewer.db` / `sec_annual.db`. Prove a change on a scratch
+  build (`python -m db_reduction.build_test_dbs`, or `SEC_DATA_ROOT=<scratch> python -m
+  sec_core.db_loader <quarter>`). The sec-comparables coordinator rebuilds the shared files after
+  a merge: built beside the old ones, checked, then swapped, keeping a backup.
+* A change must keep sec-comparables' checks green (survey, pytest, pipeline 302/302,
+  `tools.generality 60 7`, `tools.snapshot`, `tools.sensecheck --check`) — or explain every
+  difference.
+* Python here is `.venv/bin/python` (no conda on this machine).
+
 ## Location
 
 Wherever you clone the repo — no absolute paths are assumed. The package resolves
